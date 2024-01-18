@@ -33,7 +33,7 @@ type Stream struct {
 	state     streamState
 	stateLock sync.Mutex
 
-	recvBuf  *bytes.Buffer
+	recvBuf  *Buffer
 	recvLock sync.Mutex
 
 	controlHdr     header
@@ -418,7 +418,7 @@ func (s *Stream) readData(hdr header, flags uint16, conn io.Reader) error {
 	if s.recvBuf == nil {
 		// Allocate the receive buffer just-in-time to fit the full data frame.
 		// This way we can read in the whole packet without further allocations.
-		s.recvBuf = bytes.NewBuffer(make([]byte, 0, length))
+		s.recvBuf = NewBuffer(make([]byte, 0, length))
 	}
 	if _, err := io.Copy(s.recvBuf, conn); err != nil {
 		s.session.logger.Printf("[ERR] yamux: Failed to read stream data: %v", err)
@@ -448,14 +448,14 @@ func (s *Stream) SetDeadline(t time.Time) error {
 
 // SetReadDeadline sets the deadline for pending and future Read calls.
 func (s *Stream) SetReadDeadline(t time.Time) error {
-  s.readDeadline.Store(t)
+	s.readDeadline.Store(t)
 	asyncNotify(s.recvNotifyCh)
 	return nil
 }
 
 // SetWriteDeadline sets the deadline for pending and future Write calls
 func (s *Stream) SetWriteDeadline(t time.Time) error {
-  s.writeDeadline.Store(t)
+	s.writeDeadline.Store(t)
 	asyncNotify(s.sendNotifyCh)
 	return nil
 }
