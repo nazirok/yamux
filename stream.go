@@ -24,6 +24,12 @@ const (
 // Stream is used to represent a logical stream
 // within a session.
 type Stream struct {
+	// buffer sector start
+	bufferLock sync.Mutex
+	buffers    [][]byte
+	heads      [][]byte // slice heads kept for recycle
+	// buffer sector end
+
 	recvWindow uint32
 	sendWindow uint32
 
@@ -72,6 +78,14 @@ func newStream(session *Session, id uint32, state streamState) *Stream {
 	return s
 }
 
+func (s *Stream) pushBytes(buf []byte) (written int, err error) {
+	s.bufferLock.Lock()
+	s.buffers = append(s.buffers, buf)
+	s.heads = append(s.heads, buf)
+	s.bufferLock.Unlock()
+	return
+}
+
 // Session returns the associated stream session
 func (s *Stream) Session() *Session {
 	return s.session
@@ -84,6 +98,7 @@ func (s *Stream) StreamID() uint32 {
 
 // Read is used to read from the stream
 func (s *Stream) Read(b []byte) (n int, err error) {
+	//fmt.Println("READ")
 	defer asyncNotify(s.recvNotifyCh)
 START:
 	s.stateLock.Lock()
@@ -108,17 +123,38 @@ START:
 
 	// If there is no data available, block
 	s.recvLock.Lock()
-	if s.recvBuf == nil || s.recvBuf.Len() == 0 {
-		s.recvLock.Unlock()
-		goto WAIT
+	//if s.recvBuf == nil || s.recvBuf.Len() == 0 {
+	//	s.recvLock.Unlock()
+	//	goto WAIT
+	//}
+
+	if len(s.buffers) > 0 {
+		n = copy(b, s.buffers[0])
+		s.buffers[0] = s.buffers[0][n:]
+		if len(s.buffers[0]) == 0 {
+			s.buffers[0] = nil
+			s.buffers = s.buffers[1:]
+			// full recycle
+			defaultAllocator.Put(s.heads[0])
+			s.heads = s.heads[1:]
+		}
 	}
 
 	// Read any bytes
-	n, _ = s.recvBuf.Read(b)
+	//n, _ = s.recvBuf.Read(b)
 	s.recvLock.Unlock()
+
+	if n <= 0 {
+		goto WAIT
+	}
+
+	//fmt.Println("AFTER WAIT: ", n)
 
 	// Send a window update potentially
 	err = s.sendWindowUpdate()
+	s.session.returnTokens(n)
+	//fmt.Println("READ BYTES: ", n)
+	//fmt.Println("READ WITHOUT WAIT: ", n)
 	return n, err
 
 WAIT:
@@ -415,24 +451,60 @@ func (s *Stream) readData(hdr header, flags uint16, conn io.Reader) error {
 		return ErrRecvWindowExceeded
 	}
 
-	if s.recvBuf == nil {
-		// Allocate the receive buffer just-in-time to fit the full data frame.
-		// This way we can read in the whole packet without further allocations.
-		s.recvBuf = NewBuffer(make([]byte, 0, length))
-	}
-	if _, err := io.Copy(s.recvBuf, conn); err != nil {
+	//if hdr.Length() > 0 {
+	//	newbuf := defaultAllocator.Get(int(hdr.Length()))
+	//	if written, err := io.ReadFull(s.conn, newbuf); err == nil {
+	//		//fmt.Println("READ IN SESSION: ", written)
+	//		s.streamLock.Lock()
+	//		if stream, ok := s.streams[sid]; ok {
+	//			stream.pushBytes(newbuf)
+	//			atomic.AddInt32(&s.bucket, -int32(written))
+	//			stream.notifyReadEvent()
+	//		}
+	//		s.streamLock.Unlock()
+	//	} else {
+	//		s.notifyReadError(err)
+	//		return
+	//	}
+	//}
+
+	newbuf := defaultAllocator.Get(int(length))
+	written, err := io.ReadFull(conn, newbuf)
+	if err != nil {
 		s.session.logger.Printf("[ERR] yamux: Failed to read stream data: %v", err)
 		s.recvLock.Unlock()
 		return err
 	}
+	_, _ = s.pushBytes(newbuf)
+	atomic.AddInt32(&s.session.bucket, -int32(written))
+
+	//if s.recvBuf == nil {
+	//	// Allocate the receive buffer just-in-time to fit the full data frame.
+	//	// This way we can read in the whole packet without further allocations.
+	//	s.recvBuf = NewBuffer(make([]byte, 0, length))
+	//}
+	//if _, err := io.Copy(s.recvBuf, conn); err != nil {
+	//	s.session.logger.Printf("[ERR] yamux: Failed to read stream data: %v", err)
+	//	s.recvLock.Unlock()
+	//	return err
+	//}
 
 	// Decrement the receive window
 	s.recvWindow -= length
+	asyncNotify(s.recvNotifyCh)
+
 	s.recvLock.Unlock()
 
 	// Unblock any readers
-	asyncNotify(s.recvNotifyCh)
+	//asyncNotify(s.recvNotifyCh)
 	return nil
+}
+
+func (s *Session) returnTokens(n int) {
+	if atomic.AddInt32(&s.bucket, int32(n)) > 0 {
+		//fmt.Println("RENEW TOKENS, BUCKET: ", s.bucket)
+		s.notifyBucket()
+	}
 }
 
 // SetDeadline sets the read and write deadlines

@@ -17,6 +17,11 @@ import (
 // Session is used to wrap a reliable ordered connection and to
 // multiplex it into multiple streams.
 type Session struct {
+	bucket       int32         // token bucket
+	bucketNotify chan struct{} // used for waiting for tokens
+
+	// ******************************
+
 	// remoteGoAway indicates the remote side does
 	// not want futher connections. Must be first for alignment.
 	remoteGoAway int32
@@ -87,18 +92,20 @@ type sendReady struct {
 // newSession is used to construct a new session
 func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s := &Session{
-		config:     config,
-		logger:     log.New(config.LogOutput, "", log.LstdFlags),
-		conn:       conn,
-		bufRead:    bufio.NewReader(conn),
-		pings:      make(map[uint32]chan struct{}),
-		streams:    make(map[uint32]*Stream),
-		inflight:   make(map[uint32]struct{}),
-		synCh:      make(chan struct{}, config.AcceptBacklog),
-		acceptCh:   make(chan *Stream, config.AcceptBacklog),
-		sendCh:     make(chan sendReady, 64),
-		recvDoneCh: make(chan struct{}),
-		shutdownCh: make(chan struct{}),
+		bucket:       int32(1048576),
+		bucketNotify: make(chan struct{}, 1),
+		config:       config,
+		logger:       log.New(config.LogOutput, "", log.LstdFlags),
+		conn:         conn,
+		bufRead:      bufio.NewReader(conn),
+		pings:        make(map[uint32]chan struct{}),
+		streams:      make(map[uint32]*Stream),
+		inflight:     make(map[uint32]struct{}),
+		synCh:        make(chan struct{}, config.AcceptBacklog),
+		acceptCh:     make(chan *Stream, config.AcceptBacklog),
+		sendCh:       make(chan sendReady, 64),
+		recvDoneCh:   make(chan struct{}),
+		shutdownCh:   make(chan struct{}),
 	}
 	if client {
 		s.nextStreamID = 1
@@ -111,6 +118,13 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 		go s.keepalive()
 	}
 	return s
+}
+
+func (s *Session) notifyBucket() {
+	select {
+	case s.bucketNotify <- struct{}{}:
+	default:
+	}
 }
 
 // IsClosed does a safe check to see if we have shutdown
@@ -313,6 +327,7 @@ func (s *Session) keepalive() {
 				s.exitErr(ErrKeepAliveTimeout)
 				return
 			}
+			s.notifyBucket()
 		case <-s.shutdownCh:
 			return
 		}
@@ -447,7 +462,19 @@ func (s *Session) recvLoop() error {
 	defer close(s.recvDoneCh)
 	hdr := header(make([]byte, headerSize))
 	for {
+		//fmt.Println("BUCKET SIZE: ", s.bucket)
+
+		for atomic.LoadInt32(&s.bucket) <= 0 && !s.IsClosed() {
+			//fmt.Println("BUCKET FULL WAIT NOTIFY: ", s.bucket)
+			select {
+			case <-s.bucketNotify:
+			//	fmt.Println("NOTIFY BUCKET GOT")
+			case <-s.CloseChan():
+			}
+		}
+
 		// Read the header
+		//fmt.Println("READ FROM MAIN SESSION")
 		if _, err := io.ReadFull(s.bufRead, hdr); err != nil {
 			if err != io.EOF && !strings.Contains(err.Error(), "closed") && !strings.Contains(err.Error(), "reset by peer") {
 				s.logger.Printf("[ERR] yamux: Failed to read header: %v", err)
