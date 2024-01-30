@@ -649,12 +649,6 @@ func (s *Session) closeStream(id uint32) {
 		}
 	}
 
-	if n := s.streams[id].recycleTokens(); n > 0 { // return remaining tokens to the bucket
-		if atomic.AddInt32(&s.bucket, int32(n)) > 0 {
-			s.notifyBucket()
-		}
-	}
-
 	delete(s.streams, id)
 	s.streamLock.Unlock()
 }
