@@ -417,7 +417,7 @@ func TestSendData_Large(t *testing.T) {
 			t.Fatalf("err: %v", err)
 		}
 
-		t.Logf("cap=%d, n=%d\n", stream.recvBuf.Cap(), sz)
+		t.Logf("n=%d\n", sz)
 	}()
 
 	go func() {

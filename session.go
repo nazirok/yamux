@@ -465,16 +465,13 @@ func (s *Session) recvLoop() error {
 		//fmt.Println("BUCKET SIZE: ", s.bucket)
 
 		for atomic.LoadInt32(&s.bucket) <= 0 && !s.IsClosed() {
-			//fmt.Println("BUCKET FULL WAIT NOTIFY: ", s.bucket)
 			select {
 			case <-s.bucketNotify:
-			//	fmt.Println("NOTIFY BUCKET GOT")
 			case <-s.CloseChan():
 			}
 		}
 
 		// Read the header
-		//fmt.Println("READ FROM MAIN SESSION")
 		if _, err := io.ReadFull(s.bufRead, hdr); err != nil {
 			if err != io.EOF && !strings.Contains(err.Error(), "closed") && !strings.Contains(err.Error(), "reset by peer") {
 				s.logger.Printf("[ERR] yamux: Failed to read header: %v", err)
@@ -651,6 +648,13 @@ func (s *Session) closeStream(id uint32) {
 			s.logger.Printf("[ERR] yamux: SYN tracking out of sync")
 		}
 	}
+
+	if n := s.streams[id].recycleTokens(); n > 0 { // return remaining tokens to the bucket
+		if atomic.AddInt32(&s.bucket, int32(n)) > 0 {
+			s.notifyBucket()
+		}
+	}
+
 	delete(s.streams, id)
 	s.streamLock.Unlock()
 }

@@ -38,9 +38,7 @@ type Stream struct {
 
 	state     streamState
 	stateLock sync.Mutex
-
-	recvBuf  *Buffer
-	recvLock sync.Mutex
+	recvLock  sync.Mutex
 
 	controlHdr     header
 	controlErr     chan error
@@ -109,7 +107,7 @@ START:
 		fallthrough
 	case streamClosed:
 		s.recvLock.Lock()
-		if s.recvBuf == nil || s.recvBuf.Len() == 0 {
+		if s.bufLen() == 0 {
 			s.recvLock.Unlock()
 			s.stateLock.Unlock()
 			return 0, io.EOF
@@ -123,10 +121,6 @@ START:
 
 	// If there is no data available, block
 	s.recvLock.Lock()
-	//if s.recvBuf == nil || s.recvBuf.Len() == 0 {
-	//	s.recvLock.Unlock()
-	//	goto WAIT
-	//}
 
 	if len(s.buffers) > 0 {
 		n = copy(b, s.buffers[0])
@@ -140,21 +134,15 @@ START:
 		}
 	}
 
-	// Read any bytes
-	//n, _ = s.recvBuf.Read(b)
 	s.recvLock.Unlock()
 
 	if n <= 0 {
 		goto WAIT
 	}
 
-	//fmt.Println("AFTER WAIT: ", n)
-
 	// Send a window update potentially
 	err = s.sendWindowUpdate()
 	s.session.returnTokens(n)
-	//fmt.Println("READ BYTES: ", n)
-	//fmt.Println("READ WITHOUT WAIT: ", n)
 	return n, err
 
 WAIT:
@@ -280,9 +268,9 @@ func (s *Stream) sendWindowUpdate() error {
 	max := s.session.config.MaxStreamWindowSize
 	var bufLen uint32
 	s.recvLock.Lock()
-	if s.recvBuf != nil {
-		bufLen = uint32(s.recvBuf.Len())
-	}
+
+	bufLen = uint32(s.bufLen())
+
 	delta := (max - bufLen) - s.recvWindow
 
 	// Determine the flags if any
@@ -361,6 +349,13 @@ SEND_CLOSE:
 func (s *Stream) forceClose() {
 	s.stateLock.Lock()
 	s.state = streamClosed
+
+	if n := s.recycleTokens(); n > 0 { // return remaining tokens to the bucket
+		if atomic.AddInt32(&s.session.bucket, int32(n)) > 0 {
+			s.session.notifyBucket()
+		}
+	}
+
 	s.stateLock.Unlock()
 	s.notifyWaiting()
 }
@@ -451,23 +446,6 @@ func (s *Stream) readData(hdr header, flags uint16, conn io.Reader) error {
 		return ErrRecvWindowExceeded
 	}
 
-	//if hdr.Length() > 0 {
-	//	newbuf := defaultAllocator.Get(int(hdr.Length()))
-	//	if written, err := io.ReadFull(s.conn, newbuf); err == nil {
-	//		//fmt.Println("READ IN SESSION: ", written)
-	//		s.streamLock.Lock()
-	//		if stream, ok := s.streams[sid]; ok {
-	//			stream.pushBytes(newbuf)
-	//			atomic.AddInt32(&s.bucket, -int32(written))
-	//			stream.notifyReadEvent()
-	//		}
-	//		s.streamLock.Unlock()
-	//	} else {
-	//		s.notifyReadError(err)
-	//		return
-	//	}
-	//}
-
 	newbuf := defaultAllocator.Get(int(length))
 	written, err := io.ReadFull(conn, newbuf)
 	if err != nil {
@@ -477,17 +455,6 @@ func (s *Stream) readData(hdr header, flags uint16, conn io.Reader) error {
 	}
 	_, _ = s.pushBytes(newbuf)
 	atomic.AddInt32(&s.session.bucket, -int32(written))
-
-	//if s.recvBuf == nil {
-	//	// Allocate the receive buffer just-in-time to fit the full data frame.
-	//	// This way we can read in the whole packet without further allocations.
-	//	s.recvBuf = NewBuffer(make([]byte, 0, length))
-	//}
-	//if _, err := io.Copy(s.recvBuf, conn); err != nil {
-	//	s.session.logger.Printf("[ERR] yamux: Failed to read stream data: %v", err)
-	//	s.recvLock.Unlock()
-	//	return err
-	//}
 
 	// Decrement the receive window
 	s.recvWindow -= length
@@ -502,9 +469,27 @@ func (s *Stream) readData(hdr header, flags uint16, conn io.Reader) error {
 
 func (s *Session) returnTokens(n int) {
 	if atomic.AddInt32(&s.bucket, int32(n)) > 0 {
-		//fmt.Println("RENEW TOKENS, BUCKET: ", s.bucket)
 		s.notifyBucket()
 	}
+}
+
+func (s *Stream) bufLen() (n int) {
+	for k := range s.buffers {
+		n += len(s.buffers[k])
+	}
+	return
+}
+
+func (s *Stream) recycleTokens() (n int) {
+	s.bufferLock.Lock()
+	for k := range s.buffers {
+		n += len(s.buffers[k])
+		defaultAllocator.Put(s.heads[k])
+	}
+	s.buffers = nil
+	s.heads = nil
+	s.bufferLock.Unlock()
+	return
 }
 
 // SetDeadline sets the read and write deadlines
@@ -537,8 +522,6 @@ func (s *Stream) SetWriteDeadline(t time.Time) error {
 // the idle memory utilization.
 func (s *Stream) Shrink() {
 	s.recvLock.Lock()
-	if s.recvBuf != nil && s.recvBuf.Len() == 0 {
-		s.recvBuf = nil
-	}
+	s.recycleTokens()
 	s.recvLock.Unlock()
 }
