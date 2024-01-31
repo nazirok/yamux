@@ -92,7 +92,7 @@ type sendReady struct {
 // newSession is used to construct a new session
 func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s := &Session{
-		bucket:       int32(1048576),
+		bucket:       int32(config.MaxReceiveBuffer),
 		bucketNotify: make(chan struct{}, 1),
 		config:       config,
 		logger:       log.New(config.LogOutput, "", log.LstdFlags),

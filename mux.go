@@ -30,6 +30,8 @@ type Config struct {
 	// window size that we allow for a stream.
 	MaxStreamWindowSize uint32
 
+	MaxReceiveBuffer uint64
+
 	// LogOutput is used to control the log destination
 	LogOutput io.Writer
 }
