@@ -106,6 +106,7 @@ const (
 const (
 	// initialStreamWindow is the initial stream window size
 	initialStreamWindow uint32 = 256 * 1024
+	minReceiveBuffer    uint64 = 1024 * 1024
 )
 
 const (

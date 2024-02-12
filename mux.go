@@ -44,6 +44,7 @@ func DefaultConfig() *Config {
 		KeepAliveInterval:      30 * time.Second,
 		ConnectionWriteTimeout: 10 * time.Second,
 		MaxStreamWindowSize:    initialStreamWindow,
+		MaxReceiveBuffer:       minReceiveBuffer,
 		LogOutput:              os.Stderr,
 	}
 }
@@ -58,6 +59,11 @@ func VerifyConfig(config *Config) error {
 	}
 	if config.MaxStreamWindowSize < initialStreamWindow {
 		return fmt.Errorf("MaxStreamWindowSize must be larger than %d", initialStreamWindow)
+	}
+	if config.MaxReceiveBuffer == 0 {
+		config.MaxReceiveBuffer = minReceiveBuffer
+	} else if config.MaxReceiveBuffer < minReceiveBuffer {
+		return fmt.Errorf("MaxReceiveBuffer must be larger or equal than %d bytes", minReceiveBuffer)
 	}
 	return nil
 }

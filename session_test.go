@@ -64,6 +64,7 @@ func testConf() *Config {
 	conf.AcceptBacklog = 64
 	conf.KeepAliveInterval = 100 * time.Millisecond
 	conf.ConnectionWriteTimeout = 250 * time.Millisecond
+	conf.MaxReceiveBuffer = minReceiveBuffer
 	return conf
 }
 
@@ -863,6 +864,7 @@ func TestKeepAlive_Timeout(t *testing.T) {
 
 	select {
 	case err := <-errCh:
+		fmt.Println("ERR: ", err)
 		if err != ErrKeepAliveTimeout {
 			t.Fatalf("unexpected error: %v", err)
 		}

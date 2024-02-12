@@ -461,9 +461,8 @@ var (
 func (s *Session) recvLoop() error {
 	defer close(s.recvDoneCh)
 	hdr := header(make([]byte, headerSize))
-	for {
-		//fmt.Println("BUCKET SIZE: ", s.bucket)
 
+	for {
 		for atomic.LoadInt32(&s.bucket) <= 0 && !s.IsClosed() {
 			select {
 			case <-s.bucketNotify:
